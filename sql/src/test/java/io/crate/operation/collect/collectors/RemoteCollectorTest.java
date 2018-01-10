@@ -66,12 +66,13 @@ public class RemoteCollectorTest extends CrateDummyClusterServiceUnitTest {
 
     @Captor
     public ArgumentCaptor<ActionListener<JobResponse>> listenerCaptor;
+    private RoutedCollectPhase collectPhase;
 
     @Before
     public void prepare() {
         MockitoAnnotations.initMocks(this);
         UUID jobId = UUID.randomUUID();
-        RoutedCollectPhase collectPhase = new RoutedCollectPhase(
+        collectPhase = new RoutedCollectPhase(
             jobId,
             0,
             "remoteCollect",
@@ -93,15 +94,16 @@ public class RemoteCollectorTest extends CrateDummyClusterServiceUnitTest {
             new JobsLogs(() -> true));
         remoteCollector = new RemoteCollector(
             jobId,
-            "localNode",
-            "remoteNode",
+            "indexName",
+            2,
             transportJobAction,
             transportKillJobsNodeAction,
             jobContextService,
             mock(RamAccountingContext.class),
             consumer,
-            collectPhase
-        );
+            collectPhase,
+            clusterService,
+            null);
     }
 
     @Test
@@ -118,9 +120,9 @@ public class RemoteCollectorTest extends CrateDummyClusterServiceUnitTest {
 
     @Test
     public void testRemoteContextIsNotCreatedIfKillHappensBeforeCreateRemoteContext() throws Exception {
-        remoteCollector.createLocalContext();
+        remoteCollector.createLocalContext(collectPhase);
         remoteCollector.kill(new InterruptedException());
-        remoteCollector.createRemoteContext();
+        remoteCollector.createRemoteContext(collectPhase, "remoteNode");
 
         verify(transportJobAction, times(0)).execute(eq("remoteNode"), any(JobRequest.class), any(ActionListener.class));
         expectedException.expect(InterruptedException.class);
