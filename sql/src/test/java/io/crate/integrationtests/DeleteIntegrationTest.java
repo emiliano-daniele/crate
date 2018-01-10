@@ -22,14 +22,26 @@
 
 package io.crate.integrationtests;
 
+import com.carrotsearch.randomizedtesting.annotations.Seed;
 import io.crate.planner.projection.AbstractIndexWriterProjection;
 import io.crate.testing.SQLBulkResponse;
+import org.elasticsearch.cluster.metadata.IndexMetaData;
+import org.elasticsearch.cluster.metadata.MetaData;
+import org.elasticsearch.cluster.node.DiscoveryNode;
+import org.elasticsearch.cluster.routing.IndexShardRoutingTable;
+import org.elasticsearch.cluster.routing.ShardRouting;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.index.Index;
+import org.elasticsearch.index.shard.ShardId;
 import org.junit.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.hamcrest.core.Is.is;
 
+@Seed("343E71C9605E9C19")
 public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
 
     private Setup setup = new Setup(sqlExecutor);
@@ -243,19 +255,58 @@ public class DeleteIntegrationTest extends SQLTransportIntegrationTest {
     }
 
     @Test
+//    @TestLogging("org.elasticsearch.indices.cluster.IndicesClusterStateService:TRACE,org.elasticsearch.discovery.zen.NodeJoinController:TRACE,org.elasticsearch.gateway:TRACE")
+//    @Repeat(iterations = 15000)
     public void testDeleteWithSubQuery() throws Exception {
         execute("create table t1 (id int primary key, x int)");
+        ensureGreen();
         execute("insert into t1 (id, x) values (1, 1), (2, 2), (3, 3)");
         execute("refresh table t1");
 
-        execute("delete from t1 where x = (select 1)");
+        MetaData metaData = clusterService().state().metaData();
+        IndexMetaData t1MD = metaData.index("zvusm.t1");
+        if (t1MD == null) {
+            t1MD = metaData.index("t1");
+        }
+        Index index = t1MD.getIndex();
+        ShardId shardId = new ShardId(index, 2);
+
+        IndexShardRoutingTable shardRoutings = clusterService().state().routingTable().shardRoutingTable(shardId);
+        String primaryNodeId = shardRoutings.primaryShard().currentNodeId();
+        List<String> shardNodeIds = new ArrayList<>();
+        for (ShardRouting shardRouting : shardRoutings) {
+            shardNodeIds.add(shardRouting.currentNodeId());
+        }
+
+        String primaryNodeName = null;
+        String otherNodeName = null;
+        for (DiscoveryNode discoveryNode : clusterService().state().nodes()) {
+            if(primaryNodeId.equals(discoveryNode.getId())) {
+                primaryNodeName = discoveryNode.getName();
+                continue;
+            }
+
+            if (shardNodeIds.contains(discoveryNode.getId())) {
+                continue;
+            }
+
+            otherNodeName = discoveryNode.getName();
+        }
+
+        System.out.println(" Attempting to move shard from " + primaryNodeName + " to " + otherNodeName);
+        execute("alter table t1 reroute move shard 2 from '" + primaryNodeName + "' to '" + otherNodeName + "'");
+        System.out.println(response.rowCount());
+
+        Thread.sleep(30);
+
+        execute("delete from t1 where x = 1");
         assertThat(response.rowCount(), is(1L));
 
-        execute("delete from t1 where id = (select 2)");
-        assertThat(response.rowCount(), is(1L));
-
-        execute("delete from t1 where id in (select col1 from unnest([1, 2, 3]))");
-        assertThat(response.rowCount(), is(1L));
+//        execute("delete from t1 where id = (select 2)");
+//        assertThat(response.rowCount(), is(1L));
+//
+//        execute("delete from t1 where id in (select col1 from unnest([1, 2, 3]))");
+//        assertThat(response.rowCount(), is(1L));
     }
 
     @Test
